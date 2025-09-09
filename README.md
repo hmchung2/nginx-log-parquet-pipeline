@@ -77,8 +77,9 @@ Nginx Access 로그를 1시간 단위로 수집 → Parquet 변환 → MinIO 적
 
 루트에 .env 파일 생성
 실제 운영에서는 민감정보(.env) 저장소 커밋 금지
+프로젝트 루트에 .env 파일을 만들고 세팅합니다.
+사용 가능한 슬랙 웹훅 있으면 같이 추가합니다.
 
-프로젝트 루트에 .env 파일을 만들고 다음 내용을 그대로 넣습니다:
 ```
 # MinIO 설정
 MINIO_ENDPOINT=minio:9000
@@ -86,24 +87,23 @@ MINIO_ROOT_USER=minio_admin
 MINIO_ROOT_PASSWORD=minio_password
 MINIO_REGION=us-east-1
 MINIO_SECURE=false
-MINIO_VERIFY_SSL=true
+MINIO_VERIFY_SSL=false
 MINIO_CONNECT_TIMEOUT=3.0
 MINIO_READ_TIMEOUT=30.0
 BUCKET_NAME=nginx-logs
 MINIO_HTTP_POOL_MAXSIZE=60
 MINIO_HTTP_NUM_POOLS=10
 
+
 # Airflow 설정
 AIRFLOW_UID=50000
 AIRFLOW_PROJ_DIR=./airflow
-PIPELINE_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/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
-
-# vector 설정
-NGINX_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/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
-
-# Airflow 웹 계정 설정
 _AIRFLOW_WWW_USER_USERNAME=airflow
 _AIRFLOW_WWW_USER_PASSWORD=airflow
+
+# 슬랙 웹훅
+PIPELINE_SLACK_WEBHOOK_URL=<your Slack Incoming Webhook URL for pipeline alerts>
+NGINX_SLACK_WEBHOOK_URL=<your Slack Incoming Webhook URL for Nginx error/alert messages>
 ```
 
 ### 2) 서비스 실행
