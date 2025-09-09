@@ -156,7 +156,7 @@ class MinioHook:
         make_bucket_public: bool = True,
     ) -> None:
         self.ensure_bucket(make_public=make_bucket_public)
-        ctype = content_type,
+        ctype = content_type
         self.client.fput_object(
             bucket_name=self.config.bucket,
             object_name=object_name,

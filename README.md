@@ -61,9 +61,9 @@ Nginx Access 로그를 1시간 단위로 수집 → Parquet 변환 → MinIO 적
 ```
 - **수집**: Nginx 로그 파일을 Vector가 tail 하여 MinIO bucket에 raw/ 경로에 적재
 - **변환**: Airflow DAG raw_to_parquet_dag가 매시 10분에 이전 1시간 데이터를 읽어 Parquet으로 변환 
-- **저장 구조**: parquet/year=YYYY/month=MM/day=DD/hour=HH/part-*.parquet (Hive 파티셔닝)  
-- **확장성**: 파일 파싱을 ThreadPoolExecutor로 병렬 처리 (I/O 바운드 최적)
-- **운영성**: 실패/경고 Slack 알림, MinIO 버킷 자동 생성
+- **저장**: parquet/year=YYYY/month=MM/day=DD/hour=HH/part-*.parquet (Hive 파티셔닝)  
+- **안정성**: Slack 알림(경고/에러), MinIO 버킷 자동 생성, 원자적 커밋
+- **확장성**: 병렬 파일 파싱(ThreadPoolExecutor)
 
 
 ## 빠른 시작 (Quickstart)
@@ -76,9 +76,7 @@ Nginx Access 로그를 1시간 단위로 수집 → Parquet 변환 → MinIO 적
 ### 1) 환경 변수(.env) 생성
 
 루트에 .env 파일 생성
-⚠️ 안내: 아래 값들은 편의를 위해 그대로 복붙해서 바로 실행 가능하도록 제공됩니다.
-
-실제 운영 환경에서는 Webhook/비밀번호 등 민감 값은 저장소에 커밋하지 않고 Secret/환경변수 관리 도구로 분리하세요.
+실제 운영에서는 민감정보(.env) 저장소 커밋 금지
 
 프로젝트 루트에 .env 파일을 만들고 다음 내용을 그대로 넣습니다:
 ```
@@ -107,8 +105,6 @@ NGINX_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/T09DZDFE9LN/B09ECQCGHED
 _AIRFLOW_WWW_USER_USERNAME=airflow
 _AIRFLOW_WWW_USER_PASSWORD=airflow
 ```
-이 .env는 docker-compose.yaml 및 docker-compose-airflow.yaml에서 자동으로 참조됩니다.
-다음 단계에서 바로 컨테이너를 올리면 즉시 실행됩니다.
 
 ### 2) 서비스 실행
 
@@ -121,74 +117,83 @@ docker logs -f minio / nginx / vector / airflow-scheduler 등
 
 ### 3) UI 접근
 
-- Airflow UI: http://localhost:8080
-로그인: ${_AIRFLOW_WWW_USER_USERNAME} / ${_AIRFLOW_WWW_USER_PASSWORD}
-raw_to_parquet_dag -> on 으로 세팅 (현재는 pause로 생성)
+- Airflow: http://localhost:8080 (auto start, unpaused)
 
-- Nginx 테스트 페이지: http://localhost:3000
+- Nginx 테스트: http://localhost:3000
 
-- MinIO 콘솔: http://localhost:9001
-로그인: ${MINIO_ROOT_USER} / ${MINIO_ROOT_PASSWORD}
-Nginx 접숙 이후 raw/ 경로 확인
-매시 10분 이후 parquet/ 경로 확인
+- MinIO 콘솔: http://localhost:9001 (로그인: MINIO_ROOT_USER / MINIO_ROOT_PASSWORD)
 
-### 4) DAG 실행
-- 자동 스케줄 (Airflow 접속 후 On 세팅)
-주기: 매시 10분
-크론: schedule="10 * * * *"
-처리 대상: 실행 기준 시각의 직전 1시간 파티션
-예) 19:10에 실행되면 raw/YYYY/MM/DD/18/를 처리
+### 4) 스케줄/실행
 
-- 수동 실행 (Airflow UI)
-Airflow UI → DAGs → raw_to_parquet_dag → Trigger DAG w/ config
-(옵션) 특정 시각을 명시하고 싶다면 아래 Config JSON을 입력:
+- 스케줄: 10 * * * * (매시 10분)
+
+- 처리 대상: (기준시각 − 1h) 파티션 (예: 19:10 실행 → raw/.../18/ 처리)
+
+- 수동 실행(선택):
+Airflow UI → Trigger DAG → Config에 {"target_time": "YYYYMMDDHH"} 입력 시 해당 시각 처리 (에러 발생시 대처용)
+
+
+## 동작 상세
+### 시간/타임존
+
+- DAG 내부 변환 타임존: UTC (코드 기준 통일)
+- target_time 미지정 시: (스케줄 기준시각 - 1h)을 정시로 처리
+
+### 입력 포맷
+**Vector raw: GZIP + JSON***
+- 본 구현은 “한 줄 JSON 배열”(list) 또는 단일 JSON을 모두 허용
+- recursive_list=True 시 raw/.../HH/ 하위 폴더까지 탐색
+- raw_suffix=".gz" 확장자 필터
+
+### 저장 구조
+- 최종: parquet/year=YYYY/month=MM/day=DD/hour=HH/part-<uuid>.parquet
+- 원자적 커밋(옵션 ON):
+        1) parquet/_staging/YYYY/MM/DD/HH/part-*.parquet 업로드
+        2) 서버사이드 copy → 최종 경로
+        3) 스테이징 즉시 삭제(그래서 콘솔에서 거의 보이지 않음)
+
+### 알림/로깅
+- Slack: WARNING 이상 로그/예외 자동 전송
+- 실패 원인·대상 시각·태스크 정보가 포함되도록 메시지 구조화
+
+
+## 현재 기본 설정(샘플 DAG)
 ```
-{ "target_time": "2025090722" }
+@dag(
+    dag_id="raw_to_parquet_dag",
+    start_date=datetime(2025, 1, 1),
+    schedule="10 * * * *",
+    catchup=False,
+    is_paused_upon_creation=False,  # 서버 기동 시 자동 시작
+)
+def raw_to_parquet_dag():
+    RawToParquetOperator(
+        task_id="to_parquet",
+        hook=MinioHook(),
+        tz="UTC",
+        base_prefix="raw",
+        output_prefix="parquet",
+
+        # 운영 안전 옵션(데모 기본값)
+        atomic_commit=True,           # 스테이징 후 copy-commit
+        staging_dir="_staging",
+        write_success_marker=True,    # _SUCCESS 생성
+        skip_if_success_exists=False, # 재실행 시에도 항상 수행(데모 성향)
+        enable_manifest_dedup=False,  # 같은 입력이어도 스킵하지 않음(데모 성향)
+        manifest_filename="_MANIFEST.json",
+        enable_quality_check=True,    # 간단 품질검사 활성화
+    )
 ```
-포맷: YYYYMMDDHH (예: 2025년 09월 07일 22시 → "2025090722")
-이 값을 주면 해당 시각의 데이터를 처리합니다.
-값을 주지 않으면 **기본 동작(직전 1시간)**으로 처리합니다.
+운영 권장값:
+skip_if_success_exists=True, enable_manifest_dedup=True → 멱등/중복 방지 강화
 
-수동 실행 (CLI 예시)
-```
-# 직전 1시간 처리
-airflow dags trigger raw_to_parquet_dag
 
-# 특정 시각(UTC 2025-09-07 22시) 처리
-airflow dags trigger raw_to_parquet_dag \
-  --conf '{"target_time":"2025090722"}'
-```
+## 데이터 스키마
 
-## 처리 경로
-### 대상 시각이 2025-09-07 22시일 때:
-    입력: raw/2025/09/07/22/
-    출력: parquet/year=2025/month=09/day=07/hour=22/part-<uuid>.parquet
+- Raw(Vector): {"message": "...json..."} 형태(또는 JSON 배열)
+- Domain(Airflow) → Parquet(MinIO): Hive 파티션(year/month/day/hour)
 
-### 동작 요약
-```
-| 설정             | `target_time` 제공 | 처리 대상 시각        | 비고                           |
-|-----------------|-------------------|-------------------|-------------------------------|
-| 자동/수동 공통     | ❌ 없음            | (기준시각 − 1h)      | 스케줄 기준 1시간 전 파티션         |
-| 자동/수동 공통     | ✅ 있음            | `target_time`      | 지정된 시각의 파티션               |
 
-```
-
-## 스키마 정의 & 진화 정책
-
-### Raw (입력)
-- JSON
-- {"message": "...json string..."} (message 필드안에 원본 access 로그 데이터가 있다)
-
-### Domain (중간)
-AccessLog
- - 원본: remote_addr, request, status, time_iso8601, user_agent, body_bytes_sent 등
- - 파생: year, month, day, hour
-
-### Parquet (출력)
- - Hive Partition: year, month, day, hour
- - 경로 예시: s3a://nginx-logs/parquet/year=2025/month=09/day=09/hour=03/part-<uuid>.parquet
-
-### 스키마 정의
 | 필드명           | 타입      | Nullable | 기본값 | 설명              |
 |------------------|----------|----------|--------|-------------------|
 | remote_addr      | string   | false    | ""     | 클라이언트 IP     |
@@ -210,9 +215,10 @@ AccessLog
 | month            | int      | false    | -      | ts에서 추출       |
 | day              | int      | false    | -      | ts에서 추출       |
 | hour             | int      | false    | -      | ts에서 추출       |
-> 추후 운영 환경에서는 `schema_registry.json` 같은 파일로 스키마를 관리
 
-## Spark로 검증하기
+> 스키마 진화는 추후 schema_registry.json 등으로 관리 권장
+
+## Spark 검증
 ```
 pyspark \
   --packages org.apache.hadoop:hadoop-aws:3.4.1,software.amazon.awssdk:bundle:2.24.6 \
@@ -226,7 +232,7 @@ pyspark \
   --conf spark.hadoop.fs.s3a.threads.keepalivetime=60
 
 df = spark.read.parquet(
-    "s3a://nginx-logs/parquet/year=2025/month=09/day=07/hour=22/part-0fc3c3f7fd4c4a61a1dbaf729928c600.parquet"
+    "s3a://nginx-logs/parquet/year=2025/month=09/day=09/hour=07/part-351a711ab6cf4f4fb5b767ef0e20a104.parquet"
 )
 df.printSchema()
 df.show(5, truncate=False)
@@ -236,33 +242,40 @@ spark.sql("SELECT status, COUNT(*) AS cnt FROM access_logs GROUP BY status ORDER
 ```
 
 
-## 운영 플로우
-```
- Nginx Access Logs
-         │
-         ▼  (매분)
-      Vector ──────────────▶ MinIO (raw/YYYY/MM/DD/HH/)
-         │
-         ▼  (매시 10분)
-     Airflow DAG: raw_to_parquet_dag
-         │
-         ├─ 변환 성공 → MinIO (parquet/year=YYYY/month=MM/day=DD/hour=HH/)
-         │                  
-         │
-         └─ 변환 실패 → Slack 알림 (에러 로그)
-```
-### 운영 및 장애 대응 시나리오
-- 실시간 수집: Vector가 매분 Nginx Access Log를 읽어 raw/ 버킷에 저장
-- 주기 변환: Airflow DAG raw_to_parquet_dag가 매시 10분 실행, 직전 1시간 파티션을 Parquet으로 변환
-- 에러 처리: 모든 에러 메시지 + 경고 메시지는 슬랙 자동 전송. Info 레벨은 로그 전송 하지 않음
-- 매뉴얼 리커버리:
-        크리티컬 이슈(잘못된 Parquet 생성) → 운영자가 해당 시간대 파티션을 MinIO에서 삭제
-        Airflow DAG을 target_time=YYYYMMDDHH 파라미터로 재실행하여 재처리
+## 운영 & 장애 대응
 
-### 로드맵
-- 현재: 매뉴얼/백필 재실행 시 Parquet 중복 생성 가능 → Slack 알림/로그 검토 후 수동 조치
-- 향후 개선:
-        1) DAG 실행 시 target_time 기반으로 기존 파티션 중복 검사 후 overwrite 처리
-        2) 자동 idempotent 보장
-        3) Prometheus/Grafana 대시보드로 처리량/지연/실패율 가시화
-        4) expired 데이터 자동 삭제 스케줄 추가
+### 정상 플로우
+- Vector: 매분 raw 적재
+- Airflow: 매시 10분 변환(직전 1h)
+- 성공 시: 최종 파티션 + _SUCCESS
+- 실패/경고: Slack 자동 전송
+
+### 리커버리
+- 잘못 생성된 파티션 제거 → 동일 target_time로 재실행
+- (운영 권장) _SUCCESS + 매니페스트 dedup 활성화로 중복 적재 방지
+
+### 옵션 설명
+
+- atomic_commit : 스테이징 업로드 후 copy-commit으로 원자적 노출
+- staging_dir : 스테이징 prefix명 (기본 _staging)
+- write_success_marker : 완료 시 _SUCCESS 파일 생성
+- skip_if_success_exists : _SUCCESS 있으면 스킵
+- enable_manifest_dedup : 동일 시간대 입력 파일셋 해시가 같으면 스킵
+- enable_quality_check : 필수/범위 체크(이상치 시 실패)
+- recursive_list : raw/.../HH/ 하위 폴더 포함 탐색
+- raw_suffix : 입력 파일 확장자 필터(기본 .gz)
+
+스테이징 객체는 copy 후 즉시 삭제되어 콘솔에서 보이지 않는 것이 정상입니다.
+
+### 트러블슈팅
+
+- No raw logs found: 해당 시간대에 파일 없음 / raw_suffix 불일치 / 권한/경로 확인
+- Upload to MinIO failed: 네트워크/인증/버킷 정책 확인 (버킷은 코드에서 자동 생성)
+- 중복 파켓 증가: 데모 기본값은 스킵 비활성 → 운영 전환 시
+- skip_if_success_exists=True, enable_manifest_dedup=True 권장
+- Slack 미알림: PIPELINE_SLACK_WEBHOOK_URL 환경변수 확인, 방화벽/프록시 점검
+
+### 로드맵 (향후)
+- 파티션 overwrite 모드(idempotent 보장)
+- Prometheus/Grafana 연동 (처리량/지연/실패율)
+- 데이터 만료/보존 정책(수명 주기/자동 삭제)

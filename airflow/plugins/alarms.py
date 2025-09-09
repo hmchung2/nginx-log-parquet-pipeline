@@ -2,6 +2,7 @@ import os, requests
 from functools import wraps
 
 def slack_fail_alert(context):
+    """Airflow 컨텍스트를 받아 Slack Webhook으로 에러/경고 메시지 전송."""
     webhook = os.getenv("PIPELINE_SLACK_WEBHOOK_URL")
     if not webhook:
         return
@@ -30,6 +31,7 @@ def slack_fail_alert(context):
 
 
 def notify_on_exception(fn):
+    """오퍼레이터 함수 예외 시: Slack 알림"""
     @wraps(fn)
     def wrapper(self, context, *args, **kwargs):
         try:
@@ -51,6 +53,7 @@ import logging
 from airflow.models import BaseOperator
 
 class SlackLogHandler(logging.Handler):
+    """로그 레코드(WARNING 이상)를 Slack으로 전송하는 핸들러."""
     def __init__(self, level=logging.WARNING):
         super().__init__(level=level)
         self.context = None
@@ -59,11 +62,10 @@ class SlackLogHandler(logging.Handler):
     def emit(self, record):
         try:
             if record.levelno >= self.level:
-                from alarms import slack_fail_alert
                 ctx = self.context or {}
                 slack_fail_alert({
                     **ctx,
                     "exception": f"[{record.levelname}] {record.getMessage()}"
                 })
         except Exception:
-            pass
+            pass # 알림 실패는 pass
