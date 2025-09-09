@@ -53,6 +53,7 @@ x-airflow-common:
   # build: .
   environment:
     &airflow-common-env
+    PYTHONPATH: /opt/airflow/plugins:/opt/airflow/dags
     AIRFLOW__CORE__EXECUTOR: CeleryExecutor
     AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
@@ -70,14 +71,26 @@ x-airflow-common:
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
     # WARNING: Use _PIP_ADDITIONAL_REQUIREMENTS option ONLY for a quick checks
     # for other purpose (development, test and especially production usage) build/extend Airflow image.
-    _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
+    _PIP_ADDITIONAL_REQUIREMENTS: 'minio pyspark pyarrow pandas'
     # The following line can be used to set a custom config file, stored in the local config folder
     AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
+    MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+    MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio_admin}
+    MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minio_password}
+    MINIO_SECURE: ${MINIO_SECURE:-false}
+    MINIO_REGION: ${MINIO_REGION:-us-east-1}
+    BUCKET_NAME: ${BUCKET_NAME:-nginx-logs}
+    MINIO_VERIFY_SSL: ${MINIO_VERIFY_SSL:-false}
+    MINIO_CONNECT_TIMEOUT: ${MINIO_CONNECT_TIMEOUT:-3.0}
+    MINIO_READ_TIMEOUT: ${MINIO_READ_TIMEOUT:-30.0}
+    PIPELINE_SLACK_WEBHOOK_URL: ${PIPELINE_SLACK_WEBHOOK_URL}
+    MINIO_HTTP_POOL_MAXSIZE: ${MINIO_HTTP_POOL_MAXSIZE:-60}
+    MINIO_HTTP_NUM_POOLS: ${MINIO_HTTP_NUM_POOLS:-10}
   volumes:
-    - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags
-    - ${AIRFLOW_PROJ_DIR:-.}/logs:/opt/airflow/logs
-    - ${AIRFLOW_PROJ_DIR:-.}/config:/opt/airflow/config
-    - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
+    - ./airflow/dags:/opt/airflow/dags
+    - ./airflow/logs:/opt/airflow/logs
+    - ./airflow/config:/opt/airflow/config
+    - ./airflow/plugins:/opt/airflow/plugins
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on
@@ -292,7 +305,7 @@ services:
       _AIRFLOW_WWW_USER_CREATE: 'true'
       _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
       _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
-      _PIP_ADDITIONAL_REQUIREMENTS: ''
+      _PIP_ADDITIONAL_REQUIREMENTS: 'minio pyspark pyarrow pandas'
     user: "0:0"
 
   airflow-cli:

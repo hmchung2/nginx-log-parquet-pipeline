@@ -1,0 +1,81 @@
+# ========== Access Log → MinIO (1분 배치) ==========
+[sources.nginx]
+type = "file"
+include = ["/var/log/nginx/access.log"]
+read_from = "end"
+fingerprint.strategy = "device_and_inode"
+
+# time_iso8601 파싱후 타임스탬프 지정 (파티셔닝 기준은 무조건 nginx 로그 시간 기준)
+[transforms.set_partition_time]
+type = "remap"
+inputs = ["nginx"]
+source = '''
+obj = parse_json!(.message)
+.timestamp = parse_timestamp!(to_string!(obj.time_iso8601), format: "%Y-%m-%dT%H:%M:%S%z")
+'''
+
+[sinks.minio_raw]
+type = "aws_s3"
+inputs = ["set_partition_time"]
+bucket = "${BUCKET_NAME}"
+region = "us-east-1"
+endpoint = "http://minio:9000"
+force_path_style = true
+key_prefix = "raw/%Y/%m/%d/%H/"
+filename_append_uuid = true
+compression = "gzip"
+encoding.codec = "json"
+encoding.except_fields = ["timestamp"]
+
+[sinks.minio_raw.batch]
+timeout_secs = 60
+
+[sinks.minio_raw.auth]
+access_key_id = "${MINIO_ROOT_USER}"
+secret_access_key = "${MINIO_ROOT_PASSWORD}"
+
+# ========== Error Log → Slack (실시간) ==========
+[sources.nginx_error]
+type = "file"
+include = ["/var/log/nginx/error.log"]
+read_from = "end"
+
+[transforms.error_to_slack]
+type   = "remap"
+inputs = ["nginx_error"]
+source = '''
+. = { "text": to_string!(.message) }
+'''
+
+[sinks.slack_error]
+type   = "http"
+inputs = ["error_to_slack"]
+uri    = "${NGINX_SLACK_WEBHOOK_URL}"
+method = "post"
+
+[sinks.slack_error.batch]
+max_events   = 1
+timeout_secs = 1
+
+[sinks.slack_error.encoding]
+codec       = "json"
+only_fields = ["text"]
+
+[sinks.slack_error.framing]
+method = "bytes"
+
+[sinks.slack_error.headers]
+Content-Type = "application/json"
+User-Agent   = "vector-nginx-slack"
+
+[sinks.slack_error.request]
+timeout_secs            = 10
+retry_attempts          = 5
+retry_backoff_secs      = 2
+retry_max_duration_secs = 60
+in_flight_limit         = 1
+
+[sinks.slack_error.buffer]
+type       = "memory"
+max_events = 100
+when_full  = "block"

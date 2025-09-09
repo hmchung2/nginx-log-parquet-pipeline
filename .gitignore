@@ -1,0 +1,58 @@
+# ---- Python ----
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.eggs/
+*.log
+
+# ---- Virtual environments ----
+.venv/
+venv/
+env/
+ENV/
+
+# ---- Jupyter / IPython ----
+.ipynb_checkpoints/
+*.ipynb_meta.json
+
+# ---- macOS ----
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+*.swp
+
+# ---- VSCode ----
+.vscode/
+.history/
+*.code-workspace
+
+# ---- Docker ----
+minio/data/
+nginx/logs/
+logs/
+postgres-db-volume/
+*.pid
+
+# ---- Airflow ----
+airflow/logs/
+airflow/__pycache__/
+plugins/__pycache__/
+dags/__pycache__/
+config/airflow.cfg
+
+# ---- Build / binaries ----
+*.bin
+*.bkg
+*.meta
+
+# ---- Vector ----
+vector/state/
+
+# ---- Airflow metastore ----
+metastore_db/
