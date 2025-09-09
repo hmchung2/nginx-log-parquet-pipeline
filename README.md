@@ -1,6 +1,7 @@
 # 데이터 엔지니어 기술 과제 : Nginx Access Log → Parquet on MinIO
 
 Nginx Access 로그를 1시간 단위로 수집 → Parquet 변환 → MinIO 적재하고, Spark로 바로 조회 가능한 구조를 제공합니다.
+
 운영 안정성을 위해 Airflow로 스케줄링/알림, Vector로 수집, Hive 스타일 파티셔닝을 사용합니다.
 
 ## 아키텍처
@@ -76,8 +77,9 @@ Nginx Access 로그를 1시간 단위로 수집 → Parquet 변환 → MinIO 적
 ### 1) 환경 변수(.env) 생성
 
 루트에 .env 파일 생성
-실제 운영에서는 민감정보(.env) 저장소 커밋 금지
+
 프로젝트 루트에 .env 파일을 만들고 세팅합니다.
+
 사용 가능한 슬랙 웹훅 있으면 같이 추가합니다.
 
 ```
@@ -132,29 +134,6 @@ docker logs -f minio / nginx / vector / airflow-scheduler 등
 - 수동 실행(선택):
 Airflow UI → Trigger DAG → Config에 {"target_time": "YYYYMMDDHH"} 입력 시 해당 시각 처리 (에러 발생시 대처용)
 
-
-## 동작 상세
-### 시간/타임존
-
-- DAG 내부 변환 타임존: UTC (코드 기준 통일)
-- target_time 미지정 시: (스케줄 기준시각 - 1h)을 정시로 처리
-
-### 입력 포맷
-**Vector raw: GZIP + JSON***
-- 본 구현은 “한 줄 JSON 배열”(list) 또는 단일 JSON을 모두 허용
-- recursive_list=True 시 raw/.../HH/ 하위 폴더까지 탐색
-- raw_suffix=".gz" 확장자 필터
-
-### 저장 구조
-- 최종: parquet/year=YYYY/month=MM/day=DD/hour=HH/part-<uuid>.parquet
-- 원자적 커밋(옵션 ON):
-        1) parquet/_staging/YYYY/MM/DD/HH/part-*.parquet 업로드
-        2) 서버사이드 copy → 최종 경로
-        3) 스테이징 즉시 삭제(그래서 콘솔에서 거의 보이지 않음)
-
-### 알림/로깅
-- Slack: WARNING 이상 로그/예외 자동 전송
-- 실패 원인·대상 시각·태스크 정보가 포함되도록 메시지 구조화
 
 
 ## 현재 기본 설정(샘플 DAG)
@@ -245,17 +224,20 @@ spark.sql("SELECT status, COUNT(*) AS cnt FROM access_logs GROUP BY status ORDER
 ## 운영 & 장애 대응
 
 ### 정상 플로우
-- Vector: 매분 raw 적재
-- Airflow: 매시 10분 변환(직전 1h)
-- 성공 시: 최종 파티션 + _SUCCESS
-- 실패/경고: Slack 자동 전송
 
-### 리커버리
-- 잘못 생성된 파티션 제거 → 동일 target_time로 재실행
-- (운영 권장) _SUCCESS + 매니페스트 dedup 활성화로 중복 적재 방지
+- 정상 흐름: Vector → MinIO(raw) → Airflow 변환 → MinIO(parquet)
+- 재실행: 잘못된 파티션 삭제 후, 같은 target_time으로 재실행
+
+- 안정성 옵션:
+        
+        1) _SUCCESS 파일로 완료 여부 체크
+        
+        2) Slack 알림으로 실패 즉시 확인
+        
+        3) atomic commit -> 불완전 데이터 방지
+
 
 ### 옵션 설명
-
 - atomic_commit : 스테이징 업로드 후 copy-commit으로 원자적 노출
 - staging_dir : 스테이징 prefix명 (기본 _staging)
 - write_success_marker : 완료 시 _SUCCESS 파일 생성
@@ -265,17 +247,14 @@ spark.sql("SELECT status, COUNT(*) AS cnt FROM access_logs GROUP BY status ORDER
 - recursive_list : raw/.../HH/ 하위 폴더 포함 탐색
 - raw_suffix : 입력 파일 확장자 필터(기본 .gz)
 
-스테이징 객체는 copy 후 즉시 삭제되어 콘솔에서 보이지 않는 것이 정상입니다.
 
 ### 트러블슈팅
-
-- No raw logs found: 해당 시간대에 파일 없음 / raw_suffix 불일치 / 권한/경로 확인
-- Upload to MinIO failed: 네트워크/인증/버킷 정책 확인 (버킷은 코드에서 자동 생성)
-- 중복 파켓 증가: 데모 기본값은 스킵 비활성 → 운영 전환 시
+- No raw logs found 로그: 해당 시간대에 파일 없음 / raw_suffix 불일치 / 권한/경로 확인
+- Upload to MinIO failed 로그: 네트워크/인증/버킷 정책 확인 (버킷은 코드에서 자동 생성)
 - skip_if_success_exists=True, enable_manifest_dedup=True 권장
 - Slack 미알림: PIPELINE_SLACK_WEBHOOK_URL 환경변수 확인, 방화벽/프록시 점검
 
-### 로드맵 (향후)
+### 향후 개선
 - 파티션 overwrite 모드(idempotent 보장)
 - Prometheus/Grafana 연동 (처리량/지연/실패율)
 - 데이터 만료/보존 정책(수명 주기/자동 삭제)
